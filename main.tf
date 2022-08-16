@@ -73,12 +73,25 @@ EOF
 
 
 resource "aws_iam_role" "ecsTaskExecutionRole" {
-  assume_role_policy = data.aws_iam_policy_document.instance-assume-role-policy.json
-  description        = "Allows ECS tasks to call AWS services on your behalf."
-  name               = "ecsTaskExecutionRole"
-  tags               = {}
-}
+  name = "ecsTaskExecutionRole"
+  description = "Allows ECS tasks to call AWS services on your behalf."
 
+  assume_role_policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ecs-tasks.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+}
 
 
 resource "aws_iam_instance_profile" "instance" {
@@ -207,7 +220,7 @@ resource "aws_ecs_task_definition" "service" {
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
   execution_role_arn       = aws_iam_role.ecsTaskExecutionRole.arn
-  memory                   = 2048
+  memory                   = 1024
   cpu                      = 1024
   container_definitions = jsonencode([
     {
@@ -234,16 +247,19 @@ resource "aws_ecs_service" "server" {
   cluster         = aws_ecs_cluster.server-cluster.id
   task_definition = aws_ecs_task_definition.service.arn
   iam_role        = aws_iam_service_linked_role.AWSServiceRoleForECS.arn
+  force_new_deployment = true
   desired_count   = 2
+  deployment_minimum_healthy_percent = 50
+  wait_for_steady_state = true
   depends_on = [
     data.aws_iam_policy.AmazonECSServiceRolePolicy,
-    aws_ecs_task_definition.service
+    aws_spot_fleet_request.fleet
   ]
 
 
   ordered_placement_strategy {
-    type  = "binpack"
-    field = "memory"
+    type  = "spread"
+    field = "instanceId"
   }
 
 
@@ -254,10 +270,10 @@ resource "aws_ecs_service" "server" {
   }
 
 
-  placement_constraints {
-    type       = "memberOf"
-    expression = "attribute:ecs.availability-zone in [${data.aws_availability_zones.available.names[0]}, ${data.aws_availability_zones.available.names[1]}]"
-  }
+  #placement_constraints {
+  #  type       = "memberOf"
+  #  expression = "attribute:ecs.availability-zone in [${data.aws_availability_zones.available.names[0]}, ${data.aws_availability_zones.available.names[1]}]"
+  #}
 
 
   lifecycle {
@@ -302,7 +318,7 @@ resource "aws_launch_template" "web" {
   name_prefix = "WebServer-Highly-Available-LC-"
   #image_id               = data.aws_ami.latest_amazon_linux.id
   image_id               = "ami-006aeb802a1a7862a"
-  instance_type          = "t2.micro"
+  instance_type          = "t2.small"
   vpc_security_group_ids = ["${aws_security_group.ecs_instance.id}"]
   key_name               = aws_key_pair.deployer.key_name
   iam_instance_profile {
@@ -313,9 +329,9 @@ resource "aws_launch_template" "web" {
   }
   user_data = base64encode("#!/bin/bash\necho ECS_CLUSTER=${aws_ecs_cluster.server-cluster.name} >> /etc/ecs/ecs.config")
 
-  #instance_market_options {
-  #  market_type = "spot"
-  #}
+  instance_market_options {
+    market_type = "spot"
+  }
 }
 
 
@@ -343,42 +359,6 @@ resource "aws_spot_fleet_request" "fleet" {
     create_before_destroy = true
   }
 }
-
-
-#resource "aws_autoscaling_group" "web" {
-#  name                    = "ASG-${aws_launch_template.web.name}"
-#  min_size                = 2
-#  max_size                = 2
-#  min_elb_capacity        = 2
-#  health_check_type       = "ELB"
-#  availability_zones      = [aws_default_subnet.default_az1.id, aws_default_subnet.default_az2.id]
-#  load_balancers          = [aws_elb.web.name]
-#  service_linked_role_arn = "arn:aws:iam::200082615054:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
-#
-#  launch_template {
-#    id      = aws_launch_template.web.id
-#    version = "$Latest"
-#  }
-#
-#  depends_on = [
-#    aws_ecs_task_definition.service,
-#    aws_ecs_service.server,
-#    aws_spot_fleet_request.fleet,
-#    aws_elb.web,
-#    aws_launch_template.web
-#  ]
-#
-#  lifecycle {
-#    create_before_destroy = true
-#    ignore_changes = [load_balancers, target_group_arns]
-#  }
-#}
-#
-#
-#resource "aws_autoscaling_attachment" "asg_attachment_bar" {
-#  autoscaling_group_name = aws_autoscaling_group.web.id
-#  elb                    = aws_elb.web.id
-#}
 
 
 resource "aws_elb" "web" {
