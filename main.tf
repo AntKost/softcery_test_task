@@ -106,22 +106,44 @@ resource "aws_key_pair" "deployer" {
 }
 
 
-resource "aws_default_security_group" "default" {
-  vpc_id = aws_default_vpc.default.id
+resource "aws_security_group" "ecs_instance" {
+  name        = "ecs-instance-sg"
+  description = "container security group"
+  vpc_id      = aws_default_vpc.default.id
 
   ingress {
-    protocol  = "-1"
-    self      = true
-    from_port = 0
-    to_port   = 0
+    from_port       = 0
+    to_port         = 65535
+    protocol        = "TCP"
+    security_groups = ["${aws_security_group.ecs_elb.id}"]
   }
 
   ingress {
-    cidr_blocks      = ["0.0.0.0/0"]
-    ipv6_cidr_blocks = ["::/0"]
-    protocol         = "tcp"
-    from_port        = 8080
-    to_port          = 8080
+    from_port   = 22
+    to_port     = 22
+    protocol    = "TCP"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+
+resource "aws_security_group" "ecs_elb" {
+  name        = "ecs-elb-sg"
+  description = "balancer security group"
+  vpc_id      = aws_default_vpc.default.id
+
+  ingress {
+    protocol    = "tcp"
+    from_port   = "8080"
+    to_port     = "8080"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
@@ -185,7 +207,7 @@ resource "aws_ecs_task_definition" "service" {
   requires_compatibilities = ["EC2"]
   network_mode             = "bridge"
   execution_role_arn       = aws_iam_role.ecsTaskExecutionRole.arn
-  memory                   = 1024
+  memory                   = 2048
   cpu                      = 1024
   container_definitions = jsonencode([
     {
@@ -219,6 +241,12 @@ resource "aws_ecs_service" "server" {
   ]
 
 
+  ordered_placement_strategy {
+    type  = "binpack"
+    field = "memory"
+  }
+
+
   load_balancer {
     elb_name       = aws_elb.web.name
     container_name = "server"
@@ -238,18 +266,56 @@ resource "aws_ecs_service" "server" {
 }
 
 
+resource "aws_appautoscaling_target" "spot_fleet_target" {
+  max_capacity       = 4
+  min_capacity       = 2
+  resource_id        = "spot-fleet-request/${aws_spot_fleet_request.fleet.id}"
+  scalable_dimension = "ec2:spot-fleet-request:TargetCapacity"
+  service_namespace  = "ec2"
+
+  depends_on = [
+    aws_spot_fleet_request.fleet
+  ]
+}
+
+
+resource "aws_appautoscaling_policy" "spot_fleet_policy" {
+  name               = "instance-utilisation"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.spot_fleet_target.resource_id
+  scalable_dimension = aws_appautoscaling_target.spot_fleet_target.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.spot_fleet_target.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "EC2SpotFleetRequestAverageCPUUtilization"
+    }
+
+    target_value       = 75
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 300
+  }
+}
+
+
 resource "aws_launch_template" "web" {
-  name_prefix            = "WebServer-Highly-Available-LC-"
-  image_id               = data.aws_ami.latest_amazon_linux.id
+  name_prefix = "WebServer-Highly-Available-LC-"
+  #image_id               = data.aws_ami.latest_amazon_linux.id
+  image_id               = "ami-006aeb802a1a7862a"
   instance_type          = "t2.micro"
-  vpc_security_group_ids = ["${aws_default_security_group.default.id}"]
+  vpc_security_group_ids = ["${aws_security_group.ecs_instance.id}"]
   key_name               = aws_key_pair.deployer.key_name
   iam_instance_profile {
     name = aws_iam_instance_profile.instance.name
   }
-  instance_market_options {
-    market_type = "spot"
+  monitoring {
+    enabled = true
   }
+  user_data = base64encode("#!/bin/bash\necho ECS_CLUSTER=${aws_ecs_cluster.server-cluster.name} >> /etc/ecs/ecs.config")
+
+  #instance_market_options {
+  #  market_type = "spot"
+  #}
 }
 
 
@@ -265,32 +331,13 @@ resource "aws_spot_fleet_request" "fleet" {
       id      = aws_launch_template.web.id
       version = aws_launch_template.web.latest_version
     }
+    overrides {
+      subnet_id = aws_default_subnet.default_az1.id
+    }
+    overrides {
+      subnet_id = aws_default_subnet.default_az2.id
+    }
   }
-}
-
-
-resource "aws_autoscaling_group" "web" {
-  name                    = "ASG-${aws_launch_template.web.name}"
-  min_size                = 2
-  max_size                = 2
-  min_elb_capacity        = 2
-  health_check_type       = "ELB"
-  vpc_zone_identifier     = [aws_default_subnet.default_az1.id, aws_default_subnet.default_az2.id]
-  load_balancers          = [aws_elb.web.name]
-  service_linked_role_arn = "arn:aws:iam::200082615054:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
-
-  launch_template {
-    id      = aws_launch_template.web.id
-    version = "$Latest"
-  }
-
-  depends_on = [
-    aws_ecs_task_definition.service,
-    aws_ecs_service.server,
-    aws_spot_fleet_request.fleet,
-    aws_elb.web,
-    aws_launch_template.web
-  ]
 
   lifecycle {
     create_before_destroy = true
@@ -298,11 +345,46 @@ resource "aws_autoscaling_group" "web" {
 }
 
 
+#resource "aws_autoscaling_group" "web" {
+#  name                    = "ASG-${aws_launch_template.web.name}"
+#  min_size                = 2
+#  max_size                = 2
+#  min_elb_capacity        = 2
+#  health_check_type       = "ELB"
+#  availability_zones      = [aws_default_subnet.default_az1.id, aws_default_subnet.default_az2.id]
+#  load_balancers          = [aws_elb.web.name]
+#  service_linked_role_arn = "arn:aws:iam::200082615054:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+#
+#  launch_template {
+#    id      = aws_launch_template.web.id
+#    version = "$Latest"
+#  }
+#
+#  depends_on = [
+#    aws_ecs_task_definition.service,
+#    aws_ecs_service.server,
+#    aws_spot_fleet_request.fleet,
+#    aws_elb.web,
+#    aws_launch_template.web
+#  ]
+#
+#  lifecycle {
+#    create_before_destroy = true
+#    ignore_changes = [load_balancers, target_group_arns]
+#  }
+#}
+#
+#
+#resource "aws_autoscaling_attachment" "asg_attachment_bar" {
+#  autoscaling_group_name = aws_autoscaling_group.web.id
+#  elb                    = aws_elb.web.id
+#}
+
+
 resource "aws_elb" "web" {
-  name = "WebServer-HA-ELB"
-  #availability_zones = [data.aws_availability_zones.available.names[0], data.aws_availability_zones.available.names[1]]
-  subnets         = [aws_default_subnet.default_az1.id, aws_default_subnet.default_az2.id]
-  security_groups = [aws_default_security_group.default.id]
+  name               = "WebServer-HA-ELB"
+  availability_zones = [data.aws_availability_zones.available.names[0], data.aws_availability_zones.available.names[1]]
+  security_groups    = [aws_security_group.ecs_elb.id]
   listener {
     lb_port           = 8080
     lb_protocol       = "HTTP"
