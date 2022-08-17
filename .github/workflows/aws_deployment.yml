@@ -1,0 +1,67 @@
+# This workflow will build and push a new container image to Amazon ECR,
+# and then will apply a terraform plan, when there is a push to the "main" branch.
+
+name: Deploy to Amazon ECS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "main"
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REPOSITORY: server-repo
+  
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      run: |
+        # Build a docker container and
+        # push it to ECR so that it can
+        # be deployed to ECS.
+        docker buildx \
+        --cache-from type=gha, \
+        --cache-to   type=gha,mode=max \
+        -t server-repo
+        docker tag server-repo:latest 200082615054.dkr.ecr.eu-central-1.amazonaws.com/server-repo:latest
+        docker push 200082615054.dkr.ecr.eu-central-1.amazonaws.com/server-repo:latest
+        
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2.0.0
+
+    - name: Terraform init
+      id: init
+      run: terraform init -input=false
+
+    - name: Terraform plan
+      id: plan
+      run: terraform plan -out=tfplan -input=false
+      
+    - name: Terraform apply
+      id: apply
+      if: github.ref == 'refs/heads/main'
+      run: terraform apply -input=false -auto-approve tfplan
