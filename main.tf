@@ -1,3 +1,12 @@
+terraform {
+  backend "s3" {
+    bucket = "antkost-terraform-state"
+    key = "state/terraform.tfstate"
+    region = "eu-central-1"
+  }
+}
+
+
 provider "aws" {
   region = "eu-central-1"
 }
@@ -39,6 +48,26 @@ data "aws_iam_policy" "AmazonEC2ContainerServiceforEC2Role" {
 }
 
 
+resource "aws_s3_bucket" "terraform-state" {
+ bucket = "antkost-terraform-state"
+ acl    = "private"
+
+ versioning {
+   enabled = true
+ }
+}
+
+
+resource "aws_s3_bucket_public_access_block" "block" {
+ bucket = aws_s3_bucket.terraform-state.id
+
+ block_public_acls       = true
+ block_public_policy     = true
+ ignore_public_acls      = true
+ restrict_public_buckets = true
+}
+
+
 resource "aws_default_vpc" "default" {
   tags = {
     Name = "Default VPC"
@@ -73,7 +102,7 @@ EOF
 
 
 resource "aws_iam_role" "ecsTaskExecutionRole" {
-  name = "ecsTaskExecutionRole"
+  name        = "ecsTaskExecutionRole"
   description = "Allows ECS tasks to call AWS services on your behalf."
 
   assume_role_policy = <<EOF
@@ -243,14 +272,14 @@ resource "aws_ecs_task_definition" "service" {
 
 
 resource "aws_ecs_service" "server" {
-  name            = "server"
-  cluster         = aws_ecs_cluster.server-cluster.id
-  task_definition = aws_ecs_task_definition.service.arn
-  iam_role        = aws_iam_service_linked_role.AWSServiceRoleForECS.arn
-  force_new_deployment = true
-  desired_count   = 2
+  name                               = "server"
+  cluster                            = aws_ecs_cluster.server-cluster.id
+  task_definition                    = aws_ecs_task_definition.service.arn
+  iam_role                           = aws_iam_service_linked_role.AWSServiceRoleForECS.arn
+  force_new_deployment               = true
+  desired_count                      = 2
   deployment_minimum_healthy_percent = 50
-  wait_for_steady_state = true
+  wait_for_steady_state              = true
   depends_on = [
     data.aws_iam_policy.AmazonECSServiceRolePolicy,
     aws_spot_fleet_request.fleet
@@ -292,6 +321,10 @@ resource "aws_appautoscaling_target" "spot_fleet_target" {
   depends_on = [
     aws_spot_fleet_request.fleet
   ]
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 
