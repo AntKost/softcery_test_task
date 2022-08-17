@@ -46,7 +46,7 @@ jobs:
       with:
         context: .
         push: false
-        tags: server-repo
+        tags: server-repo:latest
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
