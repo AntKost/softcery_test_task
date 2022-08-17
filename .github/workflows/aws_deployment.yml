@@ -41,19 +41,11 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
       
-    - name: Build and push
-      uses: docker/build-push-action@v3
-      with:
-        context: .
-        push: false
-        tags: server-repo:latest
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        outputs: type=image,name=server-repo
 
     - name: Build, tag, and push image to Amazon ECR
       id: build-image
       run: |
+        /usr/bin/docker buildx build --cache-from type=gha --cache-to type=gha,mode=max --iidfile /tmp/docker-build-push-FbKIZw/iidfile --output type=image,name=server-repo --tag server-repo:latest --metadata-file /tmp/docker-build-push-FbKIZw/metadata-file .
         docker tag server-repo:latest 200082615054.dkr.ecr.eu-central-1.amazonaws.com/server-repo:latest
         docker push 200082615054.dkr.ecr.eu-central-1.amazonaws.com/server-repo:latest
         
