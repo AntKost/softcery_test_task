@@ -46,7 +46,6 @@ jobs:
       id: build-image
       run: |
         /usr/bin/docker buildx build --cache-from type=gha --cache-to type=gha,mode=max --output type=docker,name=server-repo --tag server-repo:latest .
-        docker images
         docker tag server-repo:latest 200082615054.dkr.ecr.eu-central-1.amazonaws.com/server-repo:latest
         docker push 200082615054.dkr.ecr.eu-central-1.amazonaws.com/server-repo:latest
         
