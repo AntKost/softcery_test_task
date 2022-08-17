@@ -46,9 +46,10 @@ jobs:
       with:
         context: .
         push: false
-        tags: server-repo:latest
+        tags: server-repo
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        outputs: type=image,name=server-repo
 
     - name: Build, tag, and push image to Amazon ECR
       id: build-image
